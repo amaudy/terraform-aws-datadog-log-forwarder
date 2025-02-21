@@ -2,9 +2,9 @@ import base64
 import gzip
 import json
 import os
-import urllib.request
+import requests
+from datetime import datetime, timezone
 from typing import Dict, Any, List
-from datetime import datetime
 
 # Datadog configuration
 DD_API_KEY = os.environ.get('DD_API_KEY')
@@ -32,7 +32,7 @@ def parse_message(message: str) -> Dict[str, Any]:
         # If message is not JSON, wrap it in a standard format
         return {
             "message": message,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "status": "info",
             "logger": "cloudwatch",
             "ddsource": "cloudwatch",
@@ -93,22 +93,20 @@ def send_to_datadog(logs: List[Dict[str, Any]]) -> bool:
         print(f"Sending {len(logs)} logs to Datadog at {DD_URL}")
         print(f"Sample log entry: {json.dumps(logs[0], indent=2)}")
         
-        req = urllib.request.Request(
+        response = requests.post(
             DD_URL,
-            data=json.dumps(logs).encode('utf-8'),
             headers=headers,
-            method='POST'
+            json=logs
         )
         
-        with urllib.request.urlopen(req) as response:
-            response_data = response.read().decode('utf-8')
-            print(f"Datadog API response status: {response.status}")
-            print(f"Datadog API response: {response_data}")
-            return response.status == 200
+        print(f"Datadog API response status: {response.status_code}")
+        print(f"Datadog API response: {response.text}")
+        
+        return response.status_code == 200
             
-    except urllib.error.HTTPError as e:
+    except requests.HTTPError as e:
         print(f"HTTP Error sending logs to Datadog: {e.code} - {e.reason}")
-        print(f"Response body: {e.read().decode('utf-8')}")
+        print(f"Response body: {e.response.text}")
         return False
     except Exception as e:
         print(f"Error sending logs to Datadog: {str(e)}")
@@ -116,8 +114,15 @@ def send_to_datadog(logs: List[Dict[str, Any]]) -> bool:
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler function."""
-    # Print event for debugging
     print(f"Received event: {json.dumps(event)}")
+    
+    # Check for required environment variables first
+    api_key = os.environ.get('DD_API_KEY')
+    if not api_key:
+        raise ValueError("DD_API_KEY environment variable is not set")
+    
+    dd_site = os.environ.get('DD_SITE', 'datadoghq.com')
+    dd_url = f'https://http-intake.logs.{dd_site}/v1/input'
     
     try:
         # CloudWatch Logs data is compressed and base64 encoded
@@ -137,23 +142,39 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         # Send to Datadog
         if processed_logs:
-            success = send_to_datadog(processed_logs)
-            if not success:
-                raise Exception("Failed to send logs to Datadog")
+            response = requests.post(
+                dd_url,
+                headers={
+                    'Content-Type': 'application/json',
+                    'DD-API-KEY': api_key
+                },
+                json=processed_logs
+            )
+            
+            print(f"Datadog API response status: {response.status_code}")
+            print(f"Datadog API response: {response.text}")
+            
+            return {
+                'statusCode': response.status_code,
+                'body': response.text if response.text else f"Successfully processed {len(processed_logs)} log events",
+                'error': response.text if response.status_code >= 400 else None
+            }
         
         return {
             'statusCode': 200,
             'body': json.dumps({
-                'message': 'Logs forwarded successfully',
-                'logs_processed': len(processed_logs)
+                'message': 'No logs to forward',
+                'logs_processed': 0
             })
         }
         
+    except ValueError as e:
+        # Re-raise ValueError for missing API key
+        raise
     except Exception as e:
-        print(f"Error processing logs: {str(e)}")
+        error_msg = str(e)
+        print(f"Error processing logs: {error_msg}")
         return {
             'statusCode': 500,
-            'body': json.dumps({
-                'error': str(e)
-            })
+            'error': error_msg
         }
