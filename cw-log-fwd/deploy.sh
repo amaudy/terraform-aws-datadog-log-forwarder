@@ -2,8 +2,9 @@
 
 # Configuration
 REGION="us-east-1"
-MAIN_FUNCTION_NAME="study-datadog-dev-forwarder"
-HEALTH_FUNCTION_NAME="study-datadog-dev-health-check"
+ENVIRONMENT=${ENVIRONMENT:-"dev"}
+MAIN_FUNCTION_NAME=${MAIN_FUNCTION_NAME:-"datadog-forwarder-${ENVIRONMENT}"}
+HEALTH_FUNCTION_NAME=${HEALTH_FUNCTION_NAME:-"datadog-health-check-${ENVIRONMENT}"}
 ROLE_NAME="study-datadog-lambda-role"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 

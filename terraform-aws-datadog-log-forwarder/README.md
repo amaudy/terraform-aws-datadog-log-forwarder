@@ -113,7 +113,7 @@ This module requires access to sensitive data:
 
 2. **Secret ARN**: The ARN of the secret containing your Datadog API key. Pass this as a variable:
    ```hcl
-   dd_api_key_secret_arn = "arn:aws:secretsmanager:region:account:secret:name"
+   dd_api_key_secret_arn = "arn:aws:secretsmanager:<region>:<account>:secret:<name>-<suffix>"
    ```
 
 3. **Environment Variables**: For testing, set required environment variables:
