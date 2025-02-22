@@ -3,7 +3,7 @@ import sys
 import importlib
 from typing import Dict, Any, List, Tuple
 
-from .lambda_function import get_api_key, get_dd_url
+from lambda_function import get_api_key, get_dd_url
 
 REQUIRED_PACKAGES = [
     ('boto3', '1.26.0'),
