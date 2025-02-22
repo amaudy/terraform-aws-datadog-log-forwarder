@@ -1,8 +1,9 @@
-module github.com/your-username/terraform-aws-datadog-log-forwarder/test
+module github.com/amaudy/terraform-aws-datadog-log-forwarder/test
 
 go 1.21
 
 require (
+	github.com/aws/aws-sdk-go v1.44.122
 	github.com/gruntwork-io/terratest v0.46.11
 	github.com/stretchr/testify v1.8.4
 )
@@ -15,7 +16,6 @@ require (
 	cloud.google.com/go/storage v1.28.1 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
 	github.com/apparentlymart/go-textseg/v13 v13.0.0 // indirect
-	github.com/aws/aws-sdk-go v1.44.122 // indirect
 	github.com/bgentry/go-netrc v0.0.0-20140422174119-9fd32a8b3d3d // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.0 // indirect

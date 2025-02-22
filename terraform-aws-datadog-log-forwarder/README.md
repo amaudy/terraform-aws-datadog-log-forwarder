@@ -99,6 +99,34 @@ For production use, we recommend pinning to specific tags for stability.
 | lambda_role_name | Name of the IAM role created for the Lambda function |
 | cloudwatch_log_subscription_arns | ARNs of the CloudWatch Log subscription filters |
 
+## Security and Sensitive Data
+
+This module requires access to sensitive data:
+
+1. **Datadog API Key**: Must be stored in AWS Secrets Manager. Never commit API keys to version control.
+   ```bash
+   # Store the API key in AWS Secrets Manager
+   aws secretsmanager create-secret \
+     --name your-secret-name \
+     --secret-string '{"DD_API_KEY":"your-api-key"}'
+   ```
+
+2. **Secret ARN**: The ARN of the secret containing your Datadog API key. Pass this as a variable:
+   ```hcl
+   dd_api_key_secret_arn = "arn:aws:secretsmanager:region:account:secret:name"
+   ```
+
+3. **Environment Variables**: For testing, set required environment variables:
+   ```bash
+   export DD_API_KEY_SECRET_ARN="your-secret-arn"
+   ```
+
+Never commit sensitive data to version control. Use:
+- Environment variables for local development
+- AWS Secrets Manager for production credentials
+- `.gitignore` to prevent accidental commits of sensitive files
+- AWS IAM roles and policies for secure access
+
 ## Versioning
 
 This module follows semantic versioning. Each release is tagged with a version number (e.g., v1.0.0).

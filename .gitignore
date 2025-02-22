@@ -1,6 +1,18 @@
+# Secrets and sensitive data
 secret.md
-.DS_Store
-*.env
+.env
+*.pem
+*.key
+*.crt
+*.env*
+*secret*
+*credentials*
+credentials
+.aws/
+config.json
+secrets.yaml
+secrets.yml
+.secrets
 
 # Python
 __pycache__/
@@ -24,6 +36,18 @@ wheels/
 .installed.cfg
 *.egg
 
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
 # Virtual Environment
 venv/
 ENV/
@@ -36,6 +60,16 @@ env/
 .vscode/
 *.swp
 *.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
 # Test
 .pytest_cache/
@@ -44,15 +78,3 @@ htmlcov/
 
 # AWS Lambda
 function.zip
-
-# Credentials and Secrets
-.env
-.env.*
-credentials
-.aws/
-*.pem
-*.key
-config.json
-secrets.yaml
-secrets.yml
-.secrets

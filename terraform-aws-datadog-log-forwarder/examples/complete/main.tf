@@ -5,22 +5,19 @@ provider "aws" {
 module "datadog_log_forwarder" {
   source = "../../modules/lambda"
 
-  name_prefix      = "datadog-${var.environment}"
-  lambda_s3_bucket = var.lambda_s3_bucket
-  lambda_s3_key    = var.lambda_s3_key
-  datadog_api_key  = var.datadog_api_key
-  datadog_site     = "datadoghq.com"
-  memory_size      = 256
-  timeout          = 300
-
-  # Optional configurations
-  secret_name        = "datadog-api-key-${var.environment}"
-  log_retention_days = 30
+  name_prefix           = var.name_prefix
+  function_name         = var.function_name
+  lambda_s3_bucket      = var.lambda_s3_bucket
+  lambda_s3_key         = var.lambda_s3_key
+  dd_api_key_secret_arn = var.dd_api_key_secret_arn
+  datadog_site          = "datadoghq.com"
+  memory_size           = 256
+  timeout               = 300
+  environment           = var.environment
 
   # CloudWatch Log Groups to subscribe to
   cloudwatch_log_groups = [
-    "/aws/lambda/example-function",
-    "/aws/apigateway/example-api"
+    "/poc/dd-log"
   ]
   filter_pattern = "" # Empty string means all logs
 
@@ -30,7 +27,23 @@ module "datadog_log_forwarder" {
 
   tags = {
     Environment = var.environment
-    Terraform   = "true"
+    Project     = "datadog-log-forwarder"
     Service     = "datadog-log-forwarder"
   }
+}
+
+output "lambda_function_arn" {
+  value = module.datadog_log_forwarder.lambda_function_arn
+}
+
+output "lambda_function_name" {
+  value = module.datadog_log_forwarder.lambda_function_name
+}
+
+output "lambda_role_arn" {
+  value = module.datadog_log_forwarder.lambda_role_arn
+}
+
+output "lambda_role_name" {
+  value = module.datadog_log_forwarder.lambda_role_name
 }

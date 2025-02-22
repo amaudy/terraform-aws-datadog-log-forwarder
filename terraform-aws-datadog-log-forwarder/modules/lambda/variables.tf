@@ -13,10 +13,9 @@ variable "lambda_s3_key" {
   type        = string
 }
 
-variable "datadog_api_key" {
-  description = "Datadog API Key"
+variable "dd_api_key_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing the Datadog API key"
   type        = string
-  sensitive   = true
 }
 
 variable "datadog_site" {
@@ -41,12 +40,6 @@ variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
   default     = {}
-}
-
-variable "secret_name" {
-  description = "Name of the AWS Secrets Manager secret to store Datadog API key"
-  type        = string
-  default     = "datadog-api-key"
 }
 
 variable "log_retention_days" {

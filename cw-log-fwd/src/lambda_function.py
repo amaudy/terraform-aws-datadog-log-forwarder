@@ -10,12 +10,15 @@ from typing import Dict, Any, List, Optional, Union
 
 # Initialize AWS clients
 secrets_client = boto3.client('secretsmanager', region_name='us-east-1')
-SECRET_NAME = "study-datadog-dev"
 
 def get_secret() -> Dict[str, str]:
     """Get secret from AWS Secrets Manager"""
+    secret_arn = os.environ.get('DD_API_KEY_SECRET_ARN')
+    if not secret_arn:
+        raise ValueError("DD_API_KEY_SECRET_ARN environment variable is not set")
+
     try:
-        response = secrets_client.get_secret_value(SecretId=SECRET_NAME)
+        response = secrets_client.get_secret_value(SecretId=secret_arn)
         if 'SecretString' in response:
             return json.loads(response['SecretString'])
         raise ValueError("Secret not found")
@@ -166,74 +169,39 @@ def send_to_datadog(logs: List[Dict[str, Any]]) -> Dict[str, Any]:
         }
 
 def health_check() -> Dict[str, Any]:
-    """
-    Check the health and configuration of the log forwarder.
-    Returns a dictionary with health status and details.
-    """
+    """Check the health and configuration of the log forwarder."""
     health_status = {
         "healthy": True,
         "checks": {
-            "api_key": {"status": "ok", "details": ""},
-            "dd_site": {"status": "ok", "details": ""},
-            "secrets_manager": {"status": "ok", "details": ""},
-            "permissions": {"status": "ok", "details": ""}
+            "secrets_manager": {
+                "status": "ok",
+                "details": "Secrets Manager configuration is valid"
+            },
+            "datadog_api": {
+                "status": "ok",
+                "details": "Datadog API configuration is valid"
+            }
         }
     }
 
-    # Check DD_SITE configuration
-    if not os.environ.get('DD_SITE', 'datadoghq.com'):
-        health_status["healthy"] = False
-        health_status["checks"]["dd_site"] = {
-            "status": "error",
-            "details": "DD_SITE environment variable not set"
-        }
-
-    # Check API key access
-    try:
-        api_key = get_api_key()
-        if not api_key:
-            health_status["healthy"] = False
-            health_status["checks"]["api_key"] = {
-                "status": "error",
-                "details": "API key not found in environment or Secrets Manager"
-            }
-    except Exception as e:
-        health_status["healthy"] = False
-        health_status["checks"]["api_key"] = {
-            "status": "error",
-            "details": f"Error accessing API key: {str(e)}"
-        }
-
-    # Check Secrets Manager access
-    try:
-        session = boto3.session.Session()
-        client = session.client('secretsmanager')
-        client.describe_secret(SecretId=SECRET_NAME)
-    except Exception as e:
+    # Check if DD_API_KEY_SECRET_ARN is set
+    secret_arn = os.environ.get('DD_API_KEY_SECRET_ARN')
+    if not secret_arn:
         health_status["healthy"] = False
         health_status["checks"]["secrets_manager"] = {
             "status": "error",
-            "details": f"Error accessing Secrets Manager: {str(e)}"
+            "details": "DD_API_KEY_SECRET_ARN environment variable is not set"
         }
+        return health_status
 
-    # Test Datadog API access
-    if get_api_key():
-        try:
-            url = f"https://api.{os.environ.get('DD_SITE', 'datadoghq.com')}/api/v1/validate"
-            headers = {
-                'Content-Type': 'application/json',
-                'DD-API-KEY': get_api_key()
-            }
-            req = urllib.request.Request(url, headers=headers, method='GET')
-            with urllib.request.urlopen(req, timeout=5) as response:
-                if response.status != 200:
-                    health_status["healthy"] = False
-                    health_status["checks"]["api_key"]["status"] = "error"
-                    health_status["checks"]["api_key"]["details"] = f"Invalid API key (status: {response.status})"
-        except Exception as e:
-            health_status["healthy"] = False
-            health_status["checks"]["api_key"]["status"] = "error"
-            health_status["checks"]["api_key"]["details"] = f"Error validating API key: {str(e)}"
+    # Check if DD_SITE is set
+    dd_site = os.environ.get('DD_SITE', 'datadoghq.com')
+    if not dd_site:
+        health_status["healthy"] = False
+        health_status["checks"]["datadog_api"] = {
+            "status": "error",
+            "details": "DD_SITE environment variable is not set"
+        }
 
     return health_status
 
@@ -241,47 +209,50 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler function."""
     print(f"Received event: {json.dumps(event)}")
     
-    # Check for required environment variables first
-    get_api_key()
-    
-    if event.get('source') == 'aws.health':
-        return health_check()
-    
-    try:
-        # CloudWatch Logs data is compressed and base64 encoded
-        compressed_payload = base64.b64decode(event['awslogs']['data'])
-        uncompressed_payload = gzip.decompress(compressed_payload)
-        log_data = json.loads(uncompressed_payload)
-        
-        # Extract context information
-        context_info = {
-            'log_group_name': log_data.get('logGroup', ''),
-            'log_stream_name': log_data.get('logStream', ''),
-            'aws_region': context.invoked_function_arn.split(':')[3]
-        }
-        
-        # Process the log events
-        processed_logs = process_log_events(log_data.get('logEvents', []), context_info)
-        
-        # Send to Datadog
-        if processed_logs:
-            return send_to_datadog(processed_logs)
-        
+    # Handle health check
+    if event.get('healthCheck'):
+        health_status = health_check()
         return {
             'statusCode': 200,
-            'body': json.dumps({
-                'message': 'No logs to forward',
-                'logs_processed': 0
-            })
+            'body': json.dumps(health_status)
         }
-        
+
+    # Process CloudWatch Logs
+    if 'awslogs' not in event:
+        return {
+            'statusCode': 400,
+            'body': json.dumps('Invalid event format')
+        }
+
+    # Get API key
+    try:
+        api_key = get_api_key()
     except ValueError as e:
-        # Re-raise ValueError for missing API key
-        raise
-    except Exception as e:
-        error_msg = str(e)
-        print(f"Error processing logs: {error_msg}")
+        print(f"Error getting API key: {str(e)}")
         return {
             'statusCode': 500,
-            'error': error_msg
+            'body': json.dumps(f"Error getting API key: {str(e)}")
         }
+
+    # Decode and decompress CloudWatch logs
+    data = base64.b64decode(event['awslogs']['data'])
+    compressed_data = gzip.decompress(data)
+    log_data = json.loads(compressed_data)
+
+    # Get context from log data
+    context_info = {
+        'log_group_name': log_data.get('logGroup', ''),
+        'log_stream_name': log_data.get('logStream', ''),
+        'aws_region': log_data.get('awsRegion', '')
+    }
+
+    # Process log events
+    processed_events = process_log_events(log_data.get('logEvents', []), context_info)
+
+    # Send logs to Datadog
+    send_to_datadog(processed_events)
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Successfully processed logs')
+    }
