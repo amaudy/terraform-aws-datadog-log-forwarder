@@ -2,14 +2,22 @@ import base64
 import gzip
 import json
 import os
-import requests
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Union
 
-# Datadog configuration
-DD_API_KEY = os.environ.get('DD_API_KEY')
-DD_SITE = os.environ.get('DD_SITE', 'datadoghq.com')
-DD_URL = f"https://http-intake.logs.{DD_SITE}/v1/input"
+def get_api_key() -> str:
+    """Get the Datadog API key from environment variables"""
+    api_key = os.environ.get('DD_API_KEY')
+    if not api_key:
+        raise ValueError("DD_API_KEY environment variable is not set")
+    return api_key
+
+def get_dd_url() -> str:
+    """Get the Datadog URL based on site configuration"""
+    dd_site = os.environ.get('DD_SITE', 'datadoghq.com')
+    return f"https://http-intake.logs.{dd_site}/v1/input"
 
 def parse_message(message: str) -> Dict[str, Any]:
     """Parse the log message and extract relevant fields."""
@@ -79,50 +87,64 @@ def process_log_events(log_events: List[Dict[str, Any]], context: Dict[str, str]
     
     return processed_events
 
-def send_to_datadog(logs: List[Dict[str, Any]]) -> bool:
-    """Send logs to Datadog HTTP API."""
-    if not DD_API_KEY:
-        raise ValueError("DD_API_KEY environment variable is not set")
+def send_to_datadog(logs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Send logs to Datadog HTTP API using urllib."""
+    api_key = get_api_key()
+    dd_url = get_dd_url()
     
     headers = {
         'Content-Type': 'application/json',
-        'DD-API-KEY': DD_API_KEY
+        'DD-API-KEY': api_key
     }
     
     try:
-        print(f"Sending {len(logs)} logs to Datadog at {DD_URL}")
+        print(f"Sending {len(logs)} logs to Datadog at {dd_url}")
         print(f"Sample log entry: {json.dumps(logs[0], indent=2)}")
         
-        response = requests.post(
-            DD_URL,
+        data = json.dumps(logs).encode('utf-8')
+        req = urllib.request.Request(
+            dd_url,
+            data=data,
             headers=headers,
-            json=logs
+            method='POST'
         )
         
-        print(f"Datadog API response status: {response.status_code}")
-        print(f"Datadog API response: {response.text}")
-        
-        return response.status_code == 200
+        with urllib.request.urlopen(req) as response:
+            response_text = response.read().decode('utf-8')
+            status_code = response.status
+            print(f"Datadog API response status: {status_code}")
+            print(f"Datadog API response: {response_text}")
             
-    except requests.HTTPError as e:
+            return {
+                'statusCode': status_code,
+                'body': response_text,
+                'error': response_text if status_code >= 400 else None
+            }
+            
+    except urllib.error.HTTPError as e:
+        error_text = e.read().decode('utf-8')
         print(f"HTTP Error sending logs to Datadog: {e.code} - {e.reason}")
-        print(f"Response body: {e.response.text}")
-        return False
+        print(f"Response body: {error_text}")
+        return {
+            'statusCode': e.code,
+            'body': error_text,
+            'error': f"HTTP Error: {e.code} - {e.reason}"
+        }
     except Exception as e:
-        print(f"Error sending logs to Datadog: {str(e)}")
-        return False
+        error_msg = str(e)
+        print(f"Error sending logs to Datadog: {error_msg}")
+        return {
+            'statusCode': 500,
+            'body': error_msg,
+            'error': error_msg
+        }
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler function."""
     print(f"Received event: {json.dumps(event)}")
     
     # Check for required environment variables first
-    api_key = os.environ.get('DD_API_KEY')
-    if not api_key:
-        raise ValueError("DD_API_KEY environment variable is not set")
-    
-    dd_site = os.environ.get('DD_SITE', 'datadoghq.com')
-    dd_url = f'https://http-intake.logs.{dd_site}/v1/input'
+    get_api_key()
     
     try:
         # CloudWatch Logs data is compressed and base64 encoded
@@ -142,23 +164,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         # Send to Datadog
         if processed_logs:
-            response = requests.post(
-                dd_url,
-                headers={
-                    'Content-Type': 'application/json',
-                    'DD-API-KEY': api_key
-                },
-                json=processed_logs
-            )
-            
-            print(f"Datadog API response status: {response.status_code}")
-            print(f"Datadog API response: {response.text}")
-            
-            return {
-                'statusCode': response.status_code,
-                'body': response.text if response.text else f"Successfully processed {len(processed_logs)} log events",
-                'error': response.text if response.status_code >= 400 else None
-            }
+            return send_to_datadog(processed_logs)
         
         return {
             'statusCode': 200,
