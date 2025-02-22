@@ -8,6 +8,7 @@ from src.lambda_function import lambda_handler, parse_message
 from datetime import datetime, timezone
 import urllib.request
 import urllib.error
+import boto3
 
 # Mock AWS Lambda context
 class MockContext:
@@ -26,6 +27,16 @@ def mock_env():
     # Clean up
     if 'DD_API_KEY' in os.environ:
         del os.environ['DD_API_KEY']
+
+@pytest.fixture
+def mock_secrets_manager():
+    with patch('src.lambda_function.secrets_client') as mock_client:
+        mock_client.get_secret_value.return_value = {
+            'SecretString': json.dumps({
+                'DD_API_KEY': 'test-secret-api-key'
+            })
+        }
+        yield mock_client
 
 def create_cloudwatch_event(log_events):
     """Create a mock CloudWatch Logs event"""
@@ -89,7 +100,7 @@ class MockResponse:
         pass
 
 @patch('urllib.request.urlopen')
-def test_lambda_handler_success(mock_urlopen, context, mock_env):
+def test_lambda_handler_success(mock_urlopen, context, mock_env, mock_secrets_manager):
     """Test successful log forwarding"""
     mock_response = MockResponse(status=200, data="OK")
     mock_urlopen.return_value = mock_response
@@ -113,7 +124,7 @@ def test_lambda_handler_success(mock_urlopen, context, mock_env):
     assert isinstance(mock_urlopen.call_args[0][0], urllib.request.Request)
 
 @patch('urllib.request.urlopen')
-def test_lambda_handler_api_error(mock_urlopen, context, mock_env):
+def test_lambda_handler_api_error(mock_urlopen, context, mock_env, mock_secrets_manager):
     """Test handling of Datadog API error"""
     mock_urlopen.side_effect = urllib.error.HTTPError(
         url='https://http-intake.logs.datadoghq.com/v1/input',
@@ -136,11 +147,16 @@ def test_lambda_handler_api_error(mock_urlopen, context, mock_env):
     assert 'error' in result
     assert mock_urlopen.called
 
-def test_lambda_handler_missing_env(context):
+def test_lambda_handler_missing_env(context, mock_secrets_manager):
     """Test handling of missing environment variables"""
     # Ensure DD_API_KEY is not set
     if 'DD_API_KEY' in os.environ:
         del os.environ['DD_API_KEY']
+    
+    # Make secret manager return empty secret
+    mock_secrets_manager.get_secret_value.return_value = {
+        'SecretString': json.dumps({})
+    }
     
     log_events = [{
         "id": "event1",
@@ -152,10 +168,33 @@ def test_lambda_handler_missing_env(context):
     
     with pytest.raises(ValueError) as excinfo:
         lambda_handler(event, context)
-    assert "DD_API_KEY environment variable is not set" in str(excinfo.value)
+    assert "DD_API_KEY not found in secret" in str(excinfo.value)
+
+def test_lambda_handler_missing_env_and_secret(context, mock_secrets_manager):
+    """Test handling of missing environment variables and secret"""
+    # Ensure DD_API_KEY is not set
+    if 'DD_API_KEY' in os.environ:
+        del os.environ['DD_API_KEY']
+    
+    # Make secret manager return empty secret
+    mock_secrets_manager.get_secret_value.return_value = {
+        'SecretString': json.dumps({})
+    }
+    
+    log_events = [{
+        "id": "event1",
+        "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "message": "Test message"
+    }]
+    
+    event = create_cloudwatch_event(log_events)
+    
+    with pytest.raises(ValueError) as excinfo:
+        lambda_handler(event, context)
+    assert "DD_API_KEY not found in secret" in str(excinfo.value)
 
 @patch('urllib.request.urlopen')
-def test_lambda_handler_network_error(mock_urlopen, context, mock_env):
+def test_lambda_handler_network_error(mock_urlopen, context, mock_env, mock_secrets_manager):
     """Test handling of network errors"""
     mock_urlopen.side_effect = urllib.error.URLError('Network unreachable')
     
@@ -171,6 +210,27 @@ def test_lambda_handler_network_error(mock_urlopen, context, mock_env):
     assert result['statusCode'] == 500
     assert 'error' in result
     assert 'Network unreachable' in result['error']
+
+def test_lambda_handler_secret_manager_error(context, mock_secrets_manager):
+    """Test handling of Secrets Manager error"""
+    # Ensure DD_API_KEY is not set
+    if 'DD_API_KEY' in os.environ:
+        del os.environ['DD_API_KEY']
+    
+    # Make secret manager raise an error
+    mock_secrets_manager.get_secret_value.side_effect = Exception("Failed to get secret")
+    
+    log_events = [{
+        "id": "event1",
+        "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "message": "Test message"
+    }]
+    
+    event = create_cloudwatch_event(log_events)
+    
+    with pytest.raises(ValueError) as excinfo:
+        lambda_handler(event, context)
+    assert "Failed to retrieve secret" in str(excinfo.value)
 
 if __name__ == "__main__":
     pytest.main([__file__, '-v'])

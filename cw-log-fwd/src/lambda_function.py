@@ -4,15 +4,41 @@ import json
 import os
 import urllib.request
 import urllib.error
+import boto3
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Union
 
+# Initialize AWS clients
+secrets_client = boto3.client('secretsmanager', region_name='us-east-1')
+SECRET_NAME = "study-datadog-dev"
+
+def get_secret() -> Dict[str, str]:
+    """Get secret from AWS Secrets Manager"""
+    try:
+        response = secrets_client.get_secret_value(SecretId=SECRET_NAME)
+        if 'SecretString' in response:
+            return json.loads(response['SecretString'])
+        raise ValueError("Secret not found")
+    except Exception as e:
+        print(f"Error retrieving secret: {str(e)}")
+        raise ValueError(f"Failed to retrieve secret: {str(e)}")
+
 def get_api_key() -> str:
-    """Get the Datadog API key from environment variables"""
+    """Get the Datadog API key from AWS Secrets Manager"""
+    # First try environment variable for local development/testing
     api_key = os.environ.get('DD_API_KEY')
-    if not api_key:
-        raise ValueError("DD_API_KEY environment variable is not set")
-    return api_key
+    if api_key:
+        return api_key
+    
+    # If not in environment, get from Secrets Manager
+    try:
+        secrets = get_secret()
+        api_key = secrets.get('DD_API_KEY')
+        if not api_key:
+            raise ValueError("DD_API_KEY not found in secret")
+        return api_key
+    except Exception as e:
+        raise ValueError(f"DD_API_KEY not available: {str(e)}")
 
 def get_dd_url() -> str:
     """Get the Datadog URL based on site configuration"""
