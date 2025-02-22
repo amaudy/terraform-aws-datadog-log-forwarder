@@ -44,3 +44,15 @@ htmlcov/
 
 # AWS Lambda
 function.zip
+
+# Credentials and Secrets
+.env
+.env.*
+credentials
+.aws/
+*.pem
+*.key
+config.json
+secrets.yaml
+secrets.yml
+.secrets

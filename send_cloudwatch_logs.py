@@ -2,6 +2,7 @@ import boto3
 import json
 import random
 import time
+import os
 from datetime import datetime
 from typing import Dict, Any, List
 
@@ -144,5 +145,12 @@ def simulate_logs(duration_seconds: int = 60, batch_size: int = 5, interval: flo
     print("\nLog simulation completed")
 
 if __name__ == "__main__":
+    # Datadog configuration
+    DD_API_KEY = os.environ.get('DD_API_KEY')
+    if not DD_API_KEY:
+        raise ValueError("DD_API_KEY environment variable is required")
+
+    DD_SITE = os.environ.get('DD_SITE', 'datadoghq.com')
+    
     # Simulate logs for 1 minute, sending 5 logs every second
     simulate_logs(duration_seconds=60, batch_size=5, interval=1.0)
