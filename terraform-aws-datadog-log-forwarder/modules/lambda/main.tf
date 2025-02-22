@@ -1,5 +1,6 @@
 locals {
   lambda_function_name = var.function_name != "" ? var.function_name : "datadog-log-forwarder-${var.environment}"
+  lambda_role_name    = "${var.name_prefix}-lambda-role"
   tags = merge(
     {
       Environment = var.environment
@@ -10,16 +11,23 @@ locals {
   )
 }
 
-# Create Lambda function zip file
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/src"
-  output_path = "${path.module}/dist/function.zip"
+# Create AWS Secrets Manager secret for Datadog API key
+resource "aws_secretsmanager_secret" "datadog_api_key" {
+  name        = var.secret_name
+  description = "Datadog API key for log forwarding"
+  tags        = var.tags
+}
+
+resource "aws_secretsmanager_secret_version" "datadog_api_key" {
+  secret_id     = aws_secretsmanager_secret.datadog_api_key.id
+  secret_string = jsonencode({
+    api_key = var.datadog_api_key
+  })
 }
 
 # Create IAM role for Lambda
-resource "aws_iam_role" "lambda_role" {
-  name = "${local.lambda_function_name}-role"
+resource "aws_iam_role" "lambda" {
+  name = local.lambda_role_name
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -34,13 +42,19 @@ resource "aws_iam_role" "lambda_role" {
     ]
   })
 
-  tags = local.tags
+  tags = var.tags
 }
 
-# Attach CloudWatch Logs policy to Lambda role
-resource "aws_iam_role_policy" "lambda_policy" {
-  name = "${local.lambda_function_name}-policy"
-  role = aws_iam_role.lambda_role.id
+# Allow Lambda to write logs to CloudWatch
+resource "aws_iam_role_policy_attachment" "lambda_logs" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Allow Lambda to access Secrets Manager
+resource "aws_iam_role_policy" "lambda_secrets" {
+  name = "${local.lambda_role_name}-secrets"
+  role = aws_iam_role.lambda.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -48,35 +62,50 @@ resource "aws_iam_role_policy" "lambda_policy" {
       {
         Effect = "Allow"
         Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
         ]
-        Resource = "arn:aws:logs:*:*:*"
+        Resource = [
+          aws_secretsmanager_secret.datadog_api_key.arn
+        ]
       }
     ]
   })
 }
 
+# Create CloudWatch log group for Lambda
+resource "aws_cloudwatch_log_group" "lambda" {
+  name              = "/aws/lambda/${local.lambda_function_name}"
+  retention_in_days = var.log_retention_days
+  tags              = var.tags
+}
+
 # Create Lambda function
 resource "aws_lambda_function" "log_forwarder" {
-  filename         = data.archive_file.lambda_zip.output_path
-  function_name    = local.lambda_function_name
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "lambda_function.lambda_handler"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
-  runtime         = "python3.9"
-  timeout         = var.timeout
-  memory_size     = var.memory_size
+  function_name = local.lambda_function_name
+  role         = aws_iam_role.lambda.arn
+  handler      = "lambda_function.lambda_handler"
+  runtime      = "python3.9"
+  timeout      = var.timeout
+  memory_size  = var.memory_size
+
+  s3_bucket = var.lambda_s3_bucket
+  s3_key    = var.lambda_s3_key
 
   environment {
-    variables = {
-      DD_API_KEY = var.datadog_api_key
+    variables = merge({
+      DD_API_KEY = jsondecode(aws_secretsmanager_secret_version.datadog_api_key.secret_string)["api_key"]
       DD_SITE    = var.datadog_site
-    }
+    }, var.environment_variables)
   }
 
   tags = local.tags
+
+  depends_on = [
+    aws_cloudwatch_log_group.lambda,
+    aws_iam_role_policy_attachment.lambda_logs,
+    aws_iam_role_policy.lambda_secrets
+  ]
 }
 
 # Create CloudWatch Log subscription filter

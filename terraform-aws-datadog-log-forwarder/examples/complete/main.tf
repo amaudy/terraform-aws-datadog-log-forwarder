@@ -1,29 +1,29 @@
 provider "aws" {
-  region = "us-east-1"
+  region = var.aws_region
 }
 
 module "datadog_log_forwarder" {
-  # Option 1: Using HTTPS
-  source = "git::https://github.com/yourusername/terraform-aws-datadog-log-forwarder.git//modules/lambda?ref=v1.0.0"
+  source = "../../modules/lambda"
 
-  # Option 2: Using SSH (if you have SSH access configured)
-  # source = "git::ssh://git@github.com/yourusername/terraform-aws-datadog-log-forwarder.git//modules/lambda?ref=v1.0.0"
-
-  environment         = "prod"
-  datadog_api_key    = var.datadog_api_key
-  datadog_site       = "datadoghq.com"
-  cloudwatch_log_groups = [
-    "/aws/lambda/my-application",
-    "/aws/apigateway/my-api"
-  ]
+  name_prefix      = "datadog-${var.environment}"
+  lambda_s3_bucket = var.lambda_s3_bucket
+  lambda_s3_key    = var.lambda_s3_key
+  datadog_api_key  = var.datadog_api_key
+  datadog_site     = var.datadog_site
 
   # Optional configurations
-  function_name = "my-datadog-forwarder"
-  memory_size  = 256
-  timeout      = 300
+  lambda_memory_size = 256
+  lambda_timeout    = 300
+  secret_name       = "datadog-api-key-${var.environment}"
+  log_retention_days = 30
+
+  environment_variables = {
+    LOG_LEVEL = "INFO"
+  }
 
   tags = {
-    Project     = "MyApp"
-    Environment = "Production"
+    Environment = var.environment
+    Terraform   = "true"
+    Service     = "datadog-log-forwarder"
   }
 }
