@@ -2,14 +2,48 @@ import base64
 import gzip
 import json
 import os
-import requests
+import urllib.request
+import urllib.error
+import boto3
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Union
 
-# Datadog configuration
-DD_API_KEY = os.environ.get('DD_API_KEY')
-DD_SITE = os.environ.get('DD_SITE', 'datadoghq.com')
-DD_URL = f"https://http-intake.logs.{DD_SITE}/v1/input"
+# Initialize AWS clients
+secrets_client = boto3.client('secretsmanager', region_name='us-east-1')
+SECRET_NAME = "study-datadog-dev"
+
+def get_secret() -> Dict[str, str]:
+    """Get secret from AWS Secrets Manager"""
+    try:
+        response = secrets_client.get_secret_value(SecretId=SECRET_NAME)
+        if 'SecretString' in response:
+            return json.loads(response['SecretString'])
+        raise ValueError("Secret not found")
+    except Exception as e:
+        print(f"Error retrieving secret: {str(e)}")
+        raise ValueError(f"Failed to retrieve secret: {str(e)}")
+
+def get_api_key() -> str:
+    """Get the Datadog API key from AWS Secrets Manager"""
+    # First try environment variable for local development/testing
+    api_key = os.environ.get('DD_API_KEY')
+    if api_key:
+        return api_key
+    
+    # If not in environment, get from Secrets Manager
+    try:
+        secrets = get_secret()
+        api_key = secrets.get('DD_API_KEY')
+        if not api_key:
+            raise ValueError("DD_API_KEY not found in secret")
+        return api_key
+    except Exception as e:
+        raise ValueError(f"DD_API_KEY not available: {str(e)}")
+
+def get_dd_url() -> str:
+    """Get the Datadog URL based on site configuration"""
+    dd_site = os.environ.get('DD_SITE', 'datadoghq.com')
+    return f"https://http-intake.logs.{dd_site}/v1/input"
 
 def parse_message(message: str) -> Dict[str, Any]:
     """Parse the log message and extract relevant fields."""
@@ -79,50 +113,139 @@ def process_log_events(log_events: List[Dict[str, Any]], context: Dict[str, str]
     
     return processed_events
 
-def send_to_datadog(logs: List[Dict[str, Any]]) -> bool:
-    """Send logs to Datadog HTTP API."""
-    if not DD_API_KEY:
-        raise ValueError("DD_API_KEY environment variable is not set")
+def send_to_datadog(logs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Send logs to Datadog HTTP API using urllib."""
+    api_key = get_api_key()
+    dd_url = get_dd_url()
     
     headers = {
         'Content-Type': 'application/json',
-        'DD-API-KEY': DD_API_KEY
+        'DD-API-KEY': api_key
     }
     
     try:
-        print(f"Sending {len(logs)} logs to Datadog at {DD_URL}")
+        print(f"Sending {len(logs)} logs to Datadog at {dd_url}")
         print(f"Sample log entry: {json.dumps(logs[0], indent=2)}")
         
-        response = requests.post(
-            DD_URL,
+        data = json.dumps(logs).encode('utf-8')
+        req = urllib.request.Request(
+            dd_url,
+            data=data,
             headers=headers,
-            json=logs
+            method='POST'
         )
         
-        print(f"Datadog API response status: {response.status_code}")
-        print(f"Datadog API response: {response.text}")
-        
-        return response.status_code == 200
+        with urllib.request.urlopen(req) as response:
+            response_text = response.read().decode('utf-8')
+            status_code = response.status
+            print(f"Datadog API response status: {status_code}")
+            print(f"Datadog API response: {response_text}")
             
-    except requests.HTTPError as e:
+            return {
+                'statusCode': status_code,
+                'body': response_text,
+                'error': response_text if status_code >= 400 else None
+            }
+            
+    except urllib.error.HTTPError as e:
+        error_text = e.read().decode('utf-8')
         print(f"HTTP Error sending logs to Datadog: {e.code} - {e.reason}")
-        print(f"Response body: {e.response.text}")
-        return False
+        print(f"Response body: {error_text}")
+        return {
+            'statusCode': e.code,
+            'body': error_text,
+            'error': f"HTTP Error: {e.code} - {e.reason}"
+        }
     except Exception as e:
-        print(f"Error sending logs to Datadog: {str(e)}")
-        return False
+        error_msg = str(e)
+        print(f"Error sending logs to Datadog: {error_msg}")
+        return {
+            'statusCode': 500,
+            'body': error_msg,
+            'error': error_msg
+        }
+
+def health_check() -> Dict[str, Any]:
+    """
+    Check the health and configuration of the log forwarder.
+    Returns a dictionary with health status and details.
+    """
+    health_status = {
+        "healthy": True,
+        "checks": {
+            "api_key": {"status": "ok", "details": ""},
+            "dd_site": {"status": "ok", "details": ""},
+            "secrets_manager": {"status": "ok", "details": ""},
+            "permissions": {"status": "ok", "details": ""}
+        }
+    }
+
+    # Check DD_SITE configuration
+    if not os.environ.get('DD_SITE', 'datadoghq.com'):
+        health_status["healthy"] = False
+        health_status["checks"]["dd_site"] = {
+            "status": "error",
+            "details": "DD_SITE environment variable not set"
+        }
+
+    # Check API key access
+    try:
+        api_key = get_api_key()
+        if not api_key:
+            health_status["healthy"] = False
+            health_status["checks"]["api_key"] = {
+                "status": "error",
+                "details": "API key not found in environment or Secrets Manager"
+            }
+    except Exception as e:
+        health_status["healthy"] = False
+        health_status["checks"]["api_key"] = {
+            "status": "error",
+            "details": f"Error accessing API key: {str(e)}"
+        }
+
+    # Check Secrets Manager access
+    try:
+        session = boto3.session.Session()
+        client = session.client('secretsmanager')
+        client.describe_secret(SecretId=SECRET_NAME)
+    except Exception as e:
+        health_status["healthy"] = False
+        health_status["checks"]["secrets_manager"] = {
+            "status": "error",
+            "details": f"Error accessing Secrets Manager: {str(e)}"
+        }
+
+    # Test Datadog API access
+    if get_api_key():
+        try:
+            url = f"https://api.{os.environ.get('DD_SITE', 'datadoghq.com')}/api/v1/validate"
+            headers = {
+                'Content-Type': 'application/json',
+                'DD-API-KEY': get_api_key()
+            }
+            req = urllib.request.Request(url, headers=headers, method='GET')
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status != 200:
+                    health_status["healthy"] = False
+                    health_status["checks"]["api_key"]["status"] = "error"
+                    health_status["checks"]["api_key"]["details"] = f"Invalid API key (status: {response.status})"
+        except Exception as e:
+            health_status["healthy"] = False
+            health_status["checks"]["api_key"]["status"] = "error"
+            health_status["checks"]["api_key"]["details"] = f"Error validating API key: {str(e)}"
+
+    return health_status
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler function."""
     print(f"Received event: {json.dumps(event)}")
     
     # Check for required environment variables first
-    api_key = os.environ.get('DD_API_KEY')
-    if not api_key:
-        raise ValueError("DD_API_KEY environment variable is not set")
+    get_api_key()
     
-    dd_site = os.environ.get('DD_SITE', 'datadoghq.com')
-    dd_url = f'https://http-intake.logs.{dd_site}/v1/input'
+    if event.get('source') == 'aws.health':
+        return health_check()
     
     try:
         # CloudWatch Logs data is compressed and base64 encoded
@@ -142,23 +265,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         # Send to Datadog
         if processed_logs:
-            response = requests.post(
-                dd_url,
-                headers={
-                    'Content-Type': 'application/json',
-                    'DD-API-KEY': api_key
-                },
-                json=processed_logs
-            )
-            
-            print(f"Datadog API response status: {response.status_code}")
-            print(f"Datadog API response: {response.text}")
-            
-            return {
-                'statusCode': response.status_code,
-                'body': response.text if response.text else f"Successfully processed {len(processed_logs)} log events",
-                'error': response.text if response.status_code >= 400 else None
-            }
+            return send_to_datadog(processed_logs)
         
         return {
             'statusCode': 200,
