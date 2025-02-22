@@ -165,12 +165,87 @@ def send_to_datadog(logs: List[Dict[str, Any]]) -> Dict[str, Any]:
             'error': error_msg
         }
 
+def health_check() -> Dict[str, Any]:
+    """
+    Check the health and configuration of the log forwarder.
+    Returns a dictionary with health status and details.
+    """
+    health_status = {
+        "healthy": True,
+        "checks": {
+            "api_key": {"status": "ok", "details": ""},
+            "dd_site": {"status": "ok", "details": ""},
+            "secrets_manager": {"status": "ok", "details": ""},
+            "permissions": {"status": "ok", "details": ""}
+        }
+    }
+
+    # Check DD_SITE configuration
+    if not os.environ.get('DD_SITE', 'datadoghq.com'):
+        health_status["healthy"] = False
+        health_status["checks"]["dd_site"] = {
+            "status": "error",
+            "details": "DD_SITE environment variable not set"
+        }
+
+    # Check API key access
+    try:
+        api_key = get_api_key()
+        if not api_key:
+            health_status["healthy"] = False
+            health_status["checks"]["api_key"] = {
+                "status": "error",
+                "details": "API key not found in environment or Secrets Manager"
+            }
+    except Exception as e:
+        health_status["healthy"] = False
+        health_status["checks"]["api_key"] = {
+            "status": "error",
+            "details": f"Error accessing API key: {str(e)}"
+        }
+
+    # Check Secrets Manager access
+    try:
+        session = boto3.session.Session()
+        client = session.client('secretsmanager')
+        client.describe_secret(SecretId=SECRET_NAME)
+    except Exception as e:
+        health_status["healthy"] = False
+        health_status["checks"]["secrets_manager"] = {
+            "status": "error",
+            "details": f"Error accessing Secrets Manager: {str(e)}"
+        }
+
+    # Test Datadog API access
+    if get_api_key():
+        try:
+            url = f"https://api.{os.environ.get('DD_SITE', 'datadoghq.com')}/api/v1/validate"
+            headers = {
+                'Content-Type': 'application/json',
+                'DD-API-KEY': get_api_key()
+            }
+            req = urllib.request.Request(url, headers=headers, method='GET')
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status != 200:
+                    health_status["healthy"] = False
+                    health_status["checks"]["api_key"]["status"] = "error"
+                    health_status["checks"]["api_key"]["details"] = f"Invalid API key (status: {response.status})"
+        except Exception as e:
+            health_status["healthy"] = False
+            health_status["checks"]["api_key"]["status"] = "error"
+            health_status["checks"]["api_key"]["details"] = f"Error validating API key: {str(e)}"
+
+    return health_status
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler function."""
     print(f"Received event: {json.dumps(event)}")
     
     # Check for required environment variables first
     get_api_key()
+    
+    if event.get('source') == 'aws.health':
+        return health_check()
     
     try:
         # CloudWatch Logs data is compressed and base64 encoded
