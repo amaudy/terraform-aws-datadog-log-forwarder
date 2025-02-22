@@ -1,6 +1,6 @@
 locals {
   lambda_function_name = var.function_name != "" ? var.function_name : "datadog-log-forwarder-${var.environment}"
-  lambda_role_name    = "${var.name_prefix}-lambda-role"
+  lambda_role_name     = "${var.name_prefix}-lambda-role"
   tags = merge(
     {
       Environment = var.environment
@@ -19,7 +19,7 @@ resource "aws_secretsmanager_secret" "datadog_api_key" {
 }
 
 resource "aws_secretsmanager_secret_version" "datadog_api_key" {
-  secret_id     = aws_secretsmanager_secret.datadog_api_key.id
+  secret_id = aws_secretsmanager_secret.datadog_api_key.id
   secret_string = jsonencode({
     api_key = var.datadog_api_key
   })
@@ -81,31 +81,32 @@ resource "aws_cloudwatch_log_group" "lambda" {
 }
 
 # Create Lambda function
-resource "aws_lambda_function" "log_forwarder" {
+resource "aws_lambda_function" "forwarder" {
   function_name = local.lambda_function_name
-  role         = aws_iam_role.lambda.arn
-  handler      = "lambda_function.lambda_handler"
-  runtime      = "python3.9"
-  timeout      = var.timeout
-  memory_size  = var.memory_size
+  description   = "Forwards CloudWatch logs to Datadog"
 
   s3_bucket = var.lambda_s3_bucket
   s3_key    = var.lambda_s3_key
 
+  runtime = "python3.9"
+  handler = "lambda_function.lambda_handler"
+
+  role = aws_iam_role.lambda.arn
+
+  memory_size = var.memory_size
+  timeout     = var.timeout
+
   environment {
-    variables = merge({
-      DD_API_KEY = jsondecode(aws_secretsmanager_secret_version.datadog_api_key.secret_string)["api_key"]
-      DD_SITE    = var.datadog_site
-    }, var.environment_variables)
+    variables = merge(
+      {
+        DD_API_KEY_SECRET_ARN = aws_secretsmanager_secret.datadog_api_key.arn
+        DD_SITE               = var.datadog_site
+      },
+      var.environment_variables
+    )
   }
 
   tags = local.tags
-
-  depends_on = [
-    aws_cloudwatch_log_group.lambda,
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy.lambda_secrets
-  ]
 }
 
 # Create CloudWatch Log subscription filter
@@ -114,7 +115,7 @@ resource "aws_cloudwatch_log_subscription_filter" "log_subscription" {
   name            = "${local.lambda_function_name}-filter-${count.index}"
   log_group_name  = var.cloudwatch_log_groups[count.index]
   filter_pattern  = var.filter_pattern
-  destination_arn = aws_lambda_function.log_forwarder.arn
+  destination_arn = aws_lambda_function.forwarder.arn
 
   depends_on = [aws_lambda_permission.cloudwatch]
 }
@@ -123,7 +124,7 @@ resource "aws_cloudwatch_log_subscription_filter" "log_subscription" {
 resource "aws_lambda_permission" "cloudwatch" {
   statement_id  = "AllowCloudWatchInvoke"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.log_forwarder.function_name
+  function_name = aws_lambda_function.forwarder.function_name
   principal     = "logs.amazonaws.com"
   source_arn    = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:*"
 }

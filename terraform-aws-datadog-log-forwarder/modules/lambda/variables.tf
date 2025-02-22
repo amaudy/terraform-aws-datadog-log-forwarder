@@ -25,14 +25,14 @@ variable "datadog_site" {
   default     = "datadoghq.com"
 }
 
-variable "lambda_memory_size" {
-  description = "Memory size for Lambda function (MB)"
+variable "memory_size" {
+  description = "Amount of memory in MB for the Lambda function"
   type        = number
   default     = 256
 }
 
-variable "lambda_timeout" {
-  description = "Timeout for Lambda function (seconds)"
+variable "timeout" {
+  description = "Timeout in seconds for the Lambda function"
   type        = number
   default     = 300
 }
@@ -59,4 +59,28 @@ variable "environment_variables" {
   description = "Additional environment variables for Lambda function"
   type        = map(string)
   default     = {}
+}
+
+variable "function_name" {
+  description = "Name of the Lambda function. If not provided, will use datadog-log-forwarder-{environment}"
+  type        = string
+  default     = ""
+}
+
+variable "environment" {
+  description = "Environment name for the Lambda function"
+  type        = string
+  default     = "prod"
+}
+
+variable "cloudwatch_log_groups" {
+  description = "List of CloudWatch Log Group names to subscribe to"
+  type        = list(string)
+  default     = []
+}
+
+variable "filter_pattern" {
+  description = "CloudWatch Log Group subscription filter pattern"
+  type        = string
+  default     = ""
 }
