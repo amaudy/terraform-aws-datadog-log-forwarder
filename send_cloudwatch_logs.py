@@ -108,15 +108,19 @@ def send_logs_to_cloudwatch(events: List[Dict[str, Any]], sequence_token: str = 
     return response['nextSequenceToken']
 
 def create_log_stream():
-    """Create the log stream if it doesn't exist."""
+    """Create log group and stream if they don't exist."""
+    try:
+        client.create_log_group(logGroupName=LOG_GROUP)
+    except client.exceptions.ResourceAlreadyExistsException:
+        pass
+
     try:
         client.create_log_stream(
             logGroupName=LOG_GROUP,
             logStreamName=LOG_STREAM
         )
-        print(f"Created log stream: {LOG_STREAM}")
     except client.exceptions.ResourceAlreadyExistsException:
-        print(f"Log stream {LOG_STREAM} already exists")
+        pass
 
 def simulate_logs(duration_seconds: int = 60, batch_size: int = 5, interval: float = 1.0):
     """Simulate logs for a specified duration."""
