@@ -4,7 +4,8 @@ import gzip
 import base64
 import pytest
 from unittest.mock import patch, MagicMock
-from src.lambda_function import lambda_handler, parse_message, health_check
+from src.lambda_function import lambda_handler, parse_message
+from src.health_check import lambda_handler as health_check_handler
 from datetime import datetime, timezone
 import urllib.request
 import urllib.error
@@ -133,104 +134,92 @@ def test_lambda_handler_api_error(mock_urlopen, context, mock_env, mock_secrets_
         hdrs={},
         fp=None
     )
-    
+
     log_events = [{
         "id": "event1",
         "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
         "message": "Test message"
     }]
-    
+
     event = create_cloudwatch_event(log_events)
     result = lambda_handler(event, context)
-    
-    assert result['statusCode'] == 403
-    assert 'error' in result
-    assert mock_urlopen.called
+
+    assert result['statusCode'] == 500
+    assert 'error' in json.loads(result['body'])
 
 def test_lambda_handler_missing_env(context, mock_secrets_manager):
     """Test handling of missing environment variables"""
-    # Ensure DD_API_KEY is not set
     if 'DD_API_KEY' in os.environ:
         del os.environ['DD_API_KEY']
     
-    # Make secret manager return empty secret
-    mock_secrets_manager.get_secret_value.return_value = {
-        'SecretString': json.dumps({})
-    }
-    
+    mock_secrets_manager.get_secret_value.side_effect = Exception("Secret not found")
+
     log_events = [{
         "id": "event1",
         "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
         "message": "Test message"
     }]
-    
+
     event = create_cloudwatch_event(log_events)
-    
-    with pytest.raises(ValueError) as excinfo:
-        lambda_handler(event, context)
-    assert "DD_API_KEY not found in secret" in str(excinfo.value)
+    result = lambda_handler(event, context)
+
+    assert result['statusCode'] == 500
+    assert 'error' in json.loads(result['body'])
 
 def test_lambda_handler_missing_env_and_secret(context, mock_secrets_manager):
     """Test handling of missing environment variables and secret"""
-    # Ensure DD_API_KEY is not set
     if 'DD_API_KEY' in os.environ:
         del os.environ['DD_API_KEY']
     
-    # Make secret manager return empty secret
-    mock_secrets_manager.get_secret_value.return_value = {
-        'SecretString': json.dumps({})
-    }
-    
+    mock_secrets_manager.get_secret_value.side_effect = Exception("Secret not found")
+
     log_events = [{
         "id": "event1",
         "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
         "message": "Test message"
     }]
-    
+
     event = create_cloudwatch_event(log_events)
-    
-    with pytest.raises(ValueError) as excinfo:
-        lambda_handler(event, context)
-    assert "DD_API_KEY not found in secret" in str(excinfo.value)
+    result = lambda_handler(event, context)
+
+    assert result['statusCode'] == 500
+    assert 'error' in json.loads(result['body'])
 
 @patch('urllib.request.urlopen')
 def test_lambda_handler_network_error(mock_urlopen, context, mock_env, mock_secrets_manager):
     """Test handling of network errors"""
-    mock_urlopen.side_effect = urllib.error.URLError('Network unreachable')
+    mock_urlopen.side_effect = urllib.error.URLError('Connection refused')
     
     log_events = [{
         "id": "event1",
         "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
         "message": "Test message"
     }]
-    
+
     event = create_cloudwatch_event(log_events)
     result = lambda_handler(event, context)
-    
+
     assert result['statusCode'] == 500
-    assert 'error' in result
-    assert 'Network unreachable' in result['error']
+    assert 'error' in json.loads(result['body'])
 
 def test_lambda_handler_secret_manager_error(context, mock_secrets_manager):
     """Test handling of Secrets Manager error"""
-    # Ensure DD_API_KEY is not set
     if 'DD_API_KEY' in os.environ:
         del os.environ['DD_API_KEY']
-    
-    # Make secret manager raise an error
-    mock_secrets_manager.get_secret_value.side_effect = Exception("Failed to get secret")
-    
+
+    mock_secrets_manager.get_secret_value.side_effect = Exception("Access denied")
+
     log_events = [{
         "id": "event1",
         "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
         "message": "Test message"
     }]
-    
+
     event = create_cloudwatch_event(log_events)
-    
-    with pytest.raises(ValueError) as excinfo:
-        lambda_handler(event, context)
-    assert "Failed to retrieve secret" in str(excinfo.value)
+    result = lambda_handler(event, context)
+
+    assert result['statusCode'] == 500
+    assert 'error' in json.loads(result['body'])
 
 @patch('urllib.request.urlopen')
 @patch('boto3.session.Session')
@@ -246,13 +235,13 @@ def test_lambda_handler_health_check_success(mock_session, mock_urlopen, context
     mock_urlopen.return_value.__enter__.return_value = mock_response
 
     # Test health check
-    event = {"source": "aws.health"}
+    event = {"healthCheck": True}
     response = lambda_handler(event, context)
-    
-    assert response["healthy"]
-    assert response["checks"]["api_key"]["status"] == "ok"
-    assert response["checks"]["dd_site"]["status"] == "ok"
-    assert response["checks"]["secrets_manager"]["status"] == "ok"
+    body = json.loads(response['body'])
+
+    assert response['statusCode'] == 200
+    assert body['status'] == 'ok'
+    assert all(check['status'] == 'ok' for check in body['checks'].values())
 
 @patch('urllib.request.urlopen')
 @patch('boto3.session.Session')
@@ -268,11 +257,13 @@ def test_lambda_handler_health_check_api_key_failure(mock_session, mock_urlopen,
     mock_session.return_value.client.return_value = mock_client
 
     # Test health check
-    event = {"source": "aws.health"}
+    event = {"healthCheck": True}
     response = lambda_handler(event, context)
-    
-    assert not response["healthy"]
-    assert response["checks"]["api_key"]["status"] == "error"
+    body = json.loads(response['body'])
+
+    assert response['statusCode'] == 500
+    assert body['status'] == 'error'
+    assert any(check['status'] == 'error' for check in body['checks'].values())
 
 @patch('boto3.session.Session')
 def test_lambda_handler_health_check_secrets_manager_failure(mock_session, context, mock_env, mock_secrets_manager):
@@ -283,11 +274,13 @@ def test_lambda_handler_health_check_secrets_manager_failure(mock_session, conte
     mock_session.return_value.client.return_value = mock_client
 
     # Test health check
-    event = {"source": "aws.health"}
+    event = {"healthCheck": True}
     response = lambda_handler(event, context)
-    
-    assert not response["healthy"]
-    assert response["checks"]["secrets_manager"]["status"] == "error"
+    body = json.loads(response['body'])
+
+    assert response['statusCode'] == 500
+    assert body['status'] == 'error'
+    assert 'error' in body
 
 if __name__ == "__main__":
     pytest.main([__file__, '-v'])

@@ -120,90 +120,54 @@ def send_to_datadog(logs: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Send logs to Datadog HTTP API using urllib."""
     api_key = get_api_key()
     dd_url = get_dd_url()
-    
-    headers = {
-        'Content-Type': 'application/json',
-        'DD-API-KEY': api_key
-    }
-    
+
+    print(f"Sending {len(logs)} logs to Datadog at {dd_url}")
+    print(f"Sample log entry: {json.dumps(logs[0], indent=2)}")
+
     try:
-        print(f"Sending {len(logs)} logs to Datadog at {dd_url}")
-        print(f"Sample log entry: {json.dumps(logs[0], indent=2)}")
+        headers = {
+            'Content-Type': 'application/json',
+            'DD-API-KEY': api_key
+        }
         
-        data = json.dumps(logs).encode('utf-8')
-        req = urllib.request.Request(
+        request = urllib.request.Request(
             dd_url,
-            data=data,
+            data=json.dumps(logs).encode('utf-8'),
             headers=headers,
             method='POST'
         )
         
-        with urllib.request.urlopen(req) as response:
-            response_text = response.read().decode('utf-8')
-            status_code = response.status
-            print(f"Datadog API response status: {status_code}")
-            print(f"Datadog API response: {response_text}")
-            
+        with urllib.request.urlopen(request) as response:
             return {
-                'statusCode': status_code,
-                'body': response_text,
-                'error': response_text if status_code >= 400 else None
+                'statusCode': 200,
+                'body': json.dumps('Logs sent successfully')
             }
             
     except urllib.error.HTTPError as e:
-        error_text = e.read().decode('utf-8')
-        print(f"HTTP Error sending logs to Datadog: {e.code} - {e.reason}")
-        print(f"Response body: {error_text}")
-        return {
-            'statusCode': e.code,
-            'body': error_text,
-            'error': f"HTTP Error: {e.code} - {e.reason}"
-        }
-    except Exception as e:
-        error_msg = str(e)
-        print(f"Error sending logs to Datadog: {error_msg}")
+        error_msg = f"HTTP Error sending logs to Datadog: {e.code} - {e.reason}"
+        if e.fp:
+            error_msg += f"\nResponse body: {e.fp.read().decode('utf-8')}"
+        print(error_msg)
         return {
             'statusCode': 500,
-            'body': error_msg,
-            'error': error_msg
+            'body': json.dumps({'error': error_msg})
         }
-
-def health_check() -> Dict[str, Any]:
-    """Check the health and configuration of the log forwarder."""
-    health_status = {
-        "healthy": True,
-        "checks": {
-            "secrets_manager": {
-                "status": "ok",
-                "details": "Secrets Manager configuration is valid"
-            },
-            "datadog_api": {
-                "status": "ok",
-                "details": "Datadog API configuration is valid"
-            }
+        
+    except urllib.error.URLError as e:
+        error_msg = f"Error sending logs to Datadog: {str(e)}"
+        print(error_msg)
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': error_msg})
         }
-    }
-
-    # Check if DD_API_KEY_SECRET_ARN is set
-    secret_arn = os.environ.get('DD_API_KEY_SECRET_ARN')
-    if not secret_arn:
-        health_status["healthy"] = False
-        health_status["checks"]["secrets_manager"] = {
-            "status": "error",
-            "details": "DD_API_KEY_SECRET_ARN environment variable is not set"
+        
+    except Exception as e:
+        error_msg = f"Unexpected error sending logs to Datadog: {str(e)}"
+        print(error_msg)
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': error_msg})
         }
-        return health_status
-
-    # Check if DD_SITE is set
-    dd_site = os.environ.get('DD_SITE', 'datadoghq.com')
-    if not dd_site:
-        health_status["healthy"] = False
-        health_status["checks"]["datadog_api"] = {
-            "status": "error",
-            "details": "DD_SITE environment variable is not set"
-        }
-
-    return health_status
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler function."""
@@ -211,11 +175,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     # Handle health check
     if event.get('healthCheck'):
-        health_status = health_check()
-        return {
-            'statusCode': 200,
-            'body': json.dumps(health_status)
-        }
+        from health_check import lambda_handler as health_check_handler
+        return health_check_handler(event, context)
 
     # Process CloudWatch Logs
     if 'awslogs' not in event:
@@ -226,33 +187,50 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     # Get API key
     try:
+        from health_check import get_api_key, get_dd_url
         api_key = get_api_key()
     except ValueError as e:
         print(f"Error getting API key: {str(e)}")
         return {
             'statusCode': 500,
-            'body': json.dumps(f"Error getting API key: {str(e)}")
+            'body': json.dumps({'error': str(e)})
         }
 
     # Decode and decompress CloudWatch logs
-    data = base64.b64decode(event['awslogs']['data'])
-    compressed_data = gzip.decompress(data)
-    log_data = json.loads(compressed_data)
+    try:
+        decoded_data = base64.b64decode(event['awslogs']['data'])
+        decompressed_data = gzip.decompress(decoded_data)
+        log_data = json.loads(decompressed_data)
+    except Exception as e:
+        error_msg = f"Error processing CloudWatch logs data: {str(e)}"
+        print(error_msg)
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': error_msg})
+        }
 
-    # Get context from log data
-    context_info = {
-        'log_group_name': log_data.get('logGroup', ''),
-        'log_stream_name': log_data.get('logStream', ''),
-        'aws_region': log_data.get('awsRegion', '')
-    }
+    # Extract relevant fields
+    log_group = log_data.get('logGroup', '')
+    log_stream = log_data.get('logStream', '')
+    aws_region = context.invoked_function_arn.split(':')[3] if context else ''
 
     # Process log events
-    processed_events = process_log_events(log_data.get('logEvents', []), context_info)
-
-    # Send logs to Datadog
-    send_to_datadog(processed_events)
-
-    return {
-        'statusCode': 200,
-        'body': json.dumps('Successfully processed logs')
-    }
+    try:
+        log_events = log_data.get('logEvents', [])
+        processed_events = process_log_events(log_events, {
+            'log_group_name': log_group,
+            'log_stream_name': log_stream,
+            'aws_region': aws_region
+        })
+        
+        # Send logs to Datadog
+        response = send_to_datadog(processed_events)
+        return response
+        
+    except Exception as e:
+        error_msg = f"Error processing log events: {str(e)}"
+        print(error_msg)
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': error_msg})
+        }

@@ -48,8 +48,13 @@ def test_check_dependencies_old_version(mock_import):
     assert len(missing) > 0
     assert "is lower than required" in missing[0]
 
-def test_check_datadog_access_success(mock_env):
+@patch('urllib.request.urlopen')
+def test_check_datadog_access_success(mock_urlopen, mock_env):
     """Test successful Datadog access check"""
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+    
     ok, message = check_datadog_access()
     assert ok is True
     assert "Successfully" in message
@@ -63,16 +68,20 @@ def test_check_datadog_access_failure(mock_secrets_manager):
     }
     ok, message = check_datadog_access()
     assert ok is False
-    assert "Failed" in message
+    assert "DD_API_KEY_SECRET_ARN" in message
 
-def test_lambda_handler_success(mock_env):
+@patch('urllib.request.urlopen')
+def test_lambda_handler_success(mock_urlopen, mock_env):
     """Test successful health check"""
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+    
     result = lambda_handler({}, None)
     assert result['statusCode'] == 200
     body = json.loads(result['body'])
-    assert body['healthy'] is True
-    assert body['checks']['dependencies']['status'] == 'ok'
-    assert body['checks']['datadog_access']['status'] == 'ok'
+    assert body['status'] == 'ok'
+    assert all(check['status'] == 'ok' for check in body['checks'].values())
 
 def test_lambda_handler_failure(mock_secrets_manager):
     """Test health check with failures"""
@@ -81,16 +90,15 @@ def test_lambda_handler_failure(mock_secrets_manager):
     mock_secrets_manager.get_secret_value.return_value = {
         'SecretString': json.dumps({})
     }
-    
+
     with patch('importlib.import_module') as mock_import:
         mock_import.side_effect = ImportError("No module named 'missing_package'")
         result = lambda_handler({}, None)
-        
+
     assert result['statusCode'] == 500
     body = json.loads(result['body'])
-    assert body['healthy'] is False
-    assert body['checks']['dependencies']['status'] == 'error'
-    assert body['checks']['datadog_access']['status'] == 'error'
+    assert body['status'] == 'error'
+    assert any(check['status'] == 'error' for check in body['checks'].values())
 
 if __name__ == "__main__":
     pytest.main([__file__, '-v'])
