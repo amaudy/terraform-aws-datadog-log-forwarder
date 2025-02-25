@@ -34,24 +34,13 @@ jobs:
         DD_API_KEY: dummy-api-key  # Dummy value for testing
         DD_SITE: datadoghq.com
       run: |
-        python -m pytest -v --cov=src --cov-report=html --cov-report=xml
+        python -m pytest -v --cov=src --cov-report=html --cov-report=term-missing
 
-    - name: Upload test results
+    - name: Upload coverage report
       if: always()  # Upload even if tests fail
       uses: actions/upload-artifact@v4
       with:
-        name: test-results-${{ matrix.python-version }}
+        name: coverage-report-${{ matrix.python-version }}
         path: |
-          cw-log-fwd/.pytest_cache
-          cw-log-fwd/test-results
           cw-log-fwd/htmlcov
-          cw-log-fwd/coverage.xml
         compression-level: 9  # Maximum compression to save space
-
-    - name: Upload coverage to Codecov
-      if: matrix.python-version == '3.11'  # Only upload coverage once
-      uses: codecov/codecov-action@v4
-      with:
-        file: ./cw-log-fwd/coverage.xml
-        fail_ci_if_error: true
-        token: ${{ secrets.CODECOV_TOKEN }}
